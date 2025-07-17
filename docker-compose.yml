@@ -1,0 +1,105 @@
+services:
+  # Development mode with local database and Redis
+  app-dev:
+    build:
+      context: .
+      target: development
+    ports:
+      - "3000:3000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      - NODE_ENV=development
+      - USE_SECRETS_MANAGER=false
+      - DB_HOST=postgres
+      - DB_USER=ecommerce_admin
+      - DB_PASSWORD=admin
+      - DB_NAME=ecommerce_db
+      - DB_PORT=5432
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_PASSWORD=
+      - REDIS_TLS=false
+      - JWT_SECRET=kxFhnzqpOXqb5xlLpSOMOiohiVVEZpzI
+      - JWT_EXPIRES_IN=7d
+      - SESSION_SECRET=c1PhT7F2iICSd8wPNVQuH8Qu34G3toJO
+      - SESSION_MAX_AGE=86400000
+      - API_KEY=403qmlK3YObXZsra6aRG1TFZ
+      - ENCRYPTION_KEY=ACtlZRff4wAxTu4XN6vsZxGPMlunypMw
+      - RATE_LIMIT_WINDOW_MS=900000
+      - RATE_LIMIT_MAX_REQUESTS=100
+      - AWS_REGION=us-east-1
+    volumes:
+      - .:/app
+      - /app/node_modules
+    networks:
+      - app-network
+
+  # Production mode with Secrets Manager (requires AWS credentials)
+  app-prod:
+    build:
+      context: .
+      target: production
+    ports:
+      - "3001:3000"
+    environment:
+      - NODE_ENV=production
+      - USE_SECRETS_MANAGER=true
+      - AWS_REGION=us-east-1
+      - DB_SECRET_NAME=ecommerce-v3
+      - REDIS_SECRET_NAME=ecommerce-v3
+      - APP_SECRET_NAME=ecommerce-v3
+      # Mount AWS credentials or use IAM roles
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+    profiles:
+      - production
+    networks:
+      - app-network
+
+  postgres:
+    image: postgres:15
+    ports:
+      - "5433:5432"  # Changed external port to avoid conflict
+    environment:
+      - POSTGRES_USER=ecommerce_admin
+      - POSTGRES_PASSWORD=admin
+      - POSTGRES_DB=ecommerce_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ecommerce_admin -d ecommerce_db"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - app-network
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6380:6379"  # Changed external port to avoid conflict
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+    networks:
+      - app-network
+
+volumes:
+  postgres_data:
+  redis_data:
+
+networks:
+  app-network:
+    driver: bridge

@@ -1,0 +1,21 @@
+# Docker Compose override for development
+
+services:
+  app-dev:
+    build:
+      context: .
+      target: development
+    environment:
+      - NODE_ENV=development
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev
+
+  postgres:
+    environment:
+      - POSTGRES_LOG_STATEMENT=all
+      - POSTGRES_LOG_MIN_DURATION_STATEMENT=0
+    
+  redis:
+    command: redis-server --appendonly yes --loglevel verbose
