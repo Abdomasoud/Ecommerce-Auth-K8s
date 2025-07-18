@@ -8,6 +8,7 @@ pipeline {
         
         // AWS Configuration
         AWS_REGION = 'us-east-1'
+        AWS_ACCOUNT_ID = '159781650309'  // Add your AWS Account ID
         ECR_REGISTRY = "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
         ECR_REPOSITORY = "${APP_NAME}"
         
