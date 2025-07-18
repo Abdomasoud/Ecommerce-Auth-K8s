@@ -1,6 +1,10 @@
 pipeline {
     agent any
     
+    tools {
+        nodejs 'NODEJS18'
+    }
+    
     environment {
         // Application Configuration
         APP_NAME = 'ecommerce'
@@ -22,17 +26,14 @@ pipeline {
         stage('Checkout') {
             steps {
                 script {
-                    echo "Checking out code from private GitHub repository"
-                    echo "Using automatic SCM checkout"
-                    echo "Current workspace: ${env.WORKSPACE}"
+                    echo "Checking out code from GitHub repository"
                     
-                    // Verify checkout - files are in root directory
-                    sh 'ls -la'
-                    sh 'pwd'
-                    
-                    // Check if package.json exists
-                    sh 'ls -la package.json || echo "package.json not found"'
-                    sh 'ls -la Dockerfile || echo "Dockerfile not found"'
+                    // Verify checkout
+                    sh '''
+                        ls -la
+                        ls -la package.json || echo "package.json not found"
+                        ls -la Dockerfile || echo "Dockerfile not found"
+                    '''
                 }
             }
         }
@@ -41,30 +42,17 @@ pipeline {
             steps {
                 script {
                     echo "Setting up Node.js ${NODE_VERSION} environment"
-                    // Check what's available in the container
                     sh '''
                         echo "=== Environment Check ==="
                         echo "Current user: $(whoami)"
                         echo "Available tools:"
-                        command -v node && echo "Node.js: $(node --version)" || echo "Node.js: not available"
-                        command -v npm && echo "npm: $(npm --version)" || echo "npm: not available"
+                        node --version
+                        npm --version
                         command -v docker && echo "Docker: $(docker --version)" || echo "Docker: not available"
                         command -v aws && echo "AWS CLI: $(aws --version)" || echo "AWS CLI: not available"
                         
-                        echo "=== Package.json Check ==="
-                        if [ -f "package.json" ]; then
-                            echo "package.json found"
-                            cat package.json | head -20
-                        else
-                            echo "package.json not found"
-                        fi
-                        
-                        echo "=== Dockerfile Check ==="
-                        if [ -f "Dockerfile" ]; then
-                            echo "Dockerfile found"
-                        else
-                            echo "Dockerfile not found"
-                        fi
+                        echo "Installing dependencies..."
+                        npm install
                     '''
                 }
             }
@@ -73,13 +61,9 @@ pipeline {
         stage('Validate AWS Access') {
             steps {
                 script {
-                    echo "Checking for AWS CLI availability"
+                    echo "Checking AWS CLI availability"
                     sh '''
-                        if command -v aws &> /dev/null; then
-                            echo "AWS CLI is available: $(aws --version)"
-                        else
-                            echo "AWS CLI is not available - skipping AWS validation"
-                        fi
+                        command -v aws && echo "AWS CLI available" || echo "AWS CLI not available"
                     '''
                 }
             }
@@ -88,10 +72,13 @@ pipeline {
         stage('Test AWS Connections') {
             steps {
                 script {
-                    echo "Skipping AWS connection tests - Node.js not available"
+                    echo "Testing AWS connections"
                     sh '''
-                        echo "Would run: node test-aws-connections.js"
-                        echo "Requires Node.js runtime which is not installed"
+                        if [ -f "test-aws-connections.js" ]; then
+                            node test-aws-connections.js || echo "AWS connection test failed (continuing pipeline)"
+                        else
+                            echo "test-aws-connections.js not found - skipping AWS connection tests"
+                        fi
                     '''
                 }
             }
@@ -100,11 +87,9 @@ pipeline {
         stage('Run Tests') {
             steps {
                 script {
-                    echo "Skipping npm tests - Node.js not available"
+                    echo "Running npm tests"
                     sh '''
-                        echo "Would run: npm test"
-                        echo "Requires Node.js runtime which is not installed"
-                        echo "Tests will be run inside Docker container during build"
+                        npm test || echo "Tests failed (continuing pipeline)"
                     '''
                 }
             }
@@ -113,33 +98,23 @@ pipeline {
         stage('Build Docker Image') {
             steps {
                 script {
-                    echo "Building Docker image with AWS configuration"
                     sh '''
-                        # Check if Docker is available
                         if ! command -v docker &> /dev/null; then
-                            echo "Docker is not installed or not available"
-                            echo "Please configure Docker in your Jenkins environment"
+                            echo "Docker is not available"
                             exit 1
                         fi
                         
-                        # Check if Dockerfile exists
                         if [ ! -f "Dockerfile" ]; then
-                            echo "Dockerfile not found in current directory"
+                            echo "Dockerfile not found"
                             exit 1
                         fi
                         
-                        echo "Building Docker image..."
-                        # Build the Docker image with build args for AWS region
                         docker build \
                             --build-arg AWS_REGION=${AWS_REGION} \
                             --build-arg NODE_ENV=production \
                             -t ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG} .
                         
-                        # Tag as latest
                         docker tag ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG} ${DOCKER_HUB_REPOSITORY}:latest
-                        
-                        echo "Docker image built successfully"
-                        docker images | grep ${DOCKER_HUB_REPOSITORY}
                     '''
                 }
             }
@@ -148,23 +123,17 @@ pipeline {
         stage('Push to Docker Hub') {
             steps {
                 script {
-                    echo "Pushing Docker image to Docker Hub"
                     withCredentials([usernamePassword(credentialsId: 'dockerhub-credentials', passwordVariable: 'DOCKER_PASSWORD', usernameVariable: 'DOCKER_USERNAME')]) {
                         sh '''
-                            # Check if Docker is available
                             if ! command -v docker &> /dev/null; then
                                 echo "Docker is not available for pushing"
                                 exit 1
                             fi
                             
-                            # Login to Docker Hub
                             echo $DOCKER_PASSWORD | docker login -u $DOCKER_USERNAME --password-stdin
                             
-                            # Push images
                             docker push ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG}
                             docker push ${DOCKER_HUB_REPOSITORY}:latest
-                            
-                            echo "Images pushed successfully to Docker Hub"
                         '''
                     }
                 }
@@ -174,37 +143,21 @@ pipeline {
     
     post {
         always {
-            script {
-                echo "Cleaning up workspace"
-                
-                // Clean up Docker images safely
-                sh '''
-                    if command -v docker &> /dev/null; then
-                        echo "Cleaning up Docker images"
-                        docker image prune -f || true
-                        docker rmi ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG} || true
-                        docker rmi ${DOCKER_HUB_REPOSITORY}:latest || true
-                    else
-                        echo "Docker not available for cleanup"
-                    fi
-                '''
-            }
+            sh '''
+                if command -v docker &> /dev/null; then
+                    docker image prune -f || true
+                    docker rmi ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG} || true
+                    docker rmi ${DOCKER_HUB_REPOSITORY}:latest || true
+                fi
+            '''
         }
         
         success {
-            script {
-                echo "Pipeline completed successfully!"
-                echo "Build ${BUILD_NUMBER} completed successfully"
-                echo "Docker image pushed to Docker Hub: ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG}"
-            }
+            echo "Pipeline completed successfully! Image: ${DOCKER_HUB_REPOSITORY}:${DOCKER_IMAGE_TAG}"
         }
         
         failure {
-            script {
-                echo "Pipeline failed!"
-                echo "Build ${BUILD_NUMBER} failed"
-                echo "Please check the build logs for more details."
-            }
+            echo "Pipeline failed! Check build logs for details."
         }
     }
 }
