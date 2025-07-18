@@ -28,7 +28,7 @@ pipeline {
                         $class: 'GitSCM',
                         branches: [[name: "${env.BRANCH_NAME}"]],
                         userRemoteConfigs: [[
-                            credentialsId: 'github-credentials',
+                            credentialsId: 'jenkins_iti_gitops_ecommerce',
                             url: 'https://github.com/Abdomasoud/ITI_GitOps_Project.git'
                         ]]
                     ])
