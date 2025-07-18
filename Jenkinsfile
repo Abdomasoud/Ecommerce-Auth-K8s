@@ -25,7 +25,7 @@ pipeline {
                 script {
                     echo "Checking out code from private GitHub repository"
                     checkout([
-                        $class: 'GitSCM',
+                        // $class: 'GitSCM',
                         branches: [[name: "${env.BRANCH_NAME}"]],
                         userRemoteConfigs: [[
                             credentialsId: 'jenkins_iti_gitops_ecommerce',
