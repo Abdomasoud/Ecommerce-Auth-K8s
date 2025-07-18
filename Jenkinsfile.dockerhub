@@ -106,7 +106,7 @@ pipeline {
             steps {
                 script {
                     echo "Testing application AWS connections"
-                    // Only run if Node.js and test file exist
+                    // Only run if Node.js and test file exists
                     sh '''
                         if command -v node &> /dev/null && [ -f "test-aws-connections.js" ]; then
                             echo "Running AWS connection test"
