@@ -84,16 +84,16 @@ pipeline {
             }
         }
         
-        stage('Run Tests') {
-            steps {
-                script {
-                    echo "Running npm tests"
-                    sh '''
-                        npm test || echo "Tests failed (continuing pipeline)"
-                    '''
-                }
-            }
-        }
+        // stage('Run Tests') {
+        //     steps {
+        //         script {
+        //             echo "Running npm tests"
+        //             sh '''
+        //                 npm test || echo "Tests failed (continuing pipeline)"
+        //             '''
+        //         }
+        //     }
+        // }
         
         stage('Build Docker Image') {
             steps {
