@@ -75,7 +75,7 @@ pipeline {
             }
         }
         
-        stage('Test AWS Connections') {
+        // stage('Test AWS Connections') {
             // steps {
             //     dir('application') {
             //         script {
@@ -94,9 +94,9 @@ pipeline {
             //         }
             //     }
             // }
-        }
+        // }
         
-        stage('Run Tests') {
+        // stage('Run Tests') {
             // steps {
             //     dir('application') {
             //         script {
@@ -131,7 +131,7 @@ pipeline {
             //         ])
             //     }
             // }
-        }
+        // }
         
         // stage('SonarQube Analysis') {
         //     steps {
@@ -187,7 +187,6 @@ pipeline {
                                 --build-arg NODE_ENV=production \
                                 -t ${APP_NAME}:${DOCKER_IMAGE_TAG} .
                             
-                            # Tag as latest
                             docker tag ${APP_NAME}:${DOCKER_IMAGE_TAG} ${APP_NAME}:latest
                         '''
                     }
@@ -201,17 +200,14 @@ pipeline {
                     echo "Pushing Docker image to ECR"
                     withCredentials([aws(credentialsId: 'aws-credentials', region: "${AWS_REGION}")]) {
                         sh '''
-                            # Login to ECR
                             aws ecr get-login-password --region ${AWS_REGION} | docker login --username AWS --password-stdin ${ECR_REGISTRY}
-                            
-                            # Create repository if it doesn't exist
+
                             aws ecr describe-repositories --repository-names ${ECR_REPOSITORY} --region ${AWS_REGION} || \
                             aws ecr create-repository --repository-name ${ECR_REPOSITORY} --region ${AWS_REGION}
-                            
-                            # Tag and push images
+
                             docker tag ${APP_NAME}:${DOCKER_IMAGE_TAG} ${ECR_REGISTRY}/${ECR_REPOSITORY}:${DOCKER_IMAGE_TAG}
                             docker tag ${APP_NAME}:latest ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
-                            
+
                             docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:${DOCKER_IMAGE_TAG}
                             docker push ${ECR_REGISTRY}/${ECR_REPOSITORY}:latest
                         '''
