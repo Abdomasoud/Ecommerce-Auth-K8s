@@ -23,7 +23,13 @@ pipeline {
     stages {
         stage('Checkout') {
             steps {
-                checkout scm
+                script {
+                    echo "Checking out code from private GitHub repository"
+                    checkout(
+                        [$class: 'GitSCM', branches: [[name: '*/main']],
+                         userRemoteConfigs: [[url: 'https://github.com/Abdomasoud/ITI_GitOps_Project.git', 
+                         credentialsId: 'jenkins_iti_gitops_ecommerce']]])
+                }
             }
         }
         
