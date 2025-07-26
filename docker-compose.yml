@@ -49,9 +49,9 @@ services:
       - NODE_ENV=production
       - USE_SECRETS_MANAGER=true
       - AWS_REGION=us-east-1
-      - DB_SECRET_NAME=ecommerce-v3
-      - REDIS_SECRET_NAME=ecommerce-v3
-      - APP_SECRET_NAME=ecommerce-v3
+      - DB_SECRET_NAME=ecommerce-v4
+      - REDIS_SECRET_NAME=ecommerce-v4
+      - APP_SECRET_NAME=ecommerce-v4
       # Mount AWS credentials or use IAM roles
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}

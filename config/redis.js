@@ -28,7 +28,7 @@ function createRedisClient() {
         port: config.REDIS_PORT || 6379,
         // ElastiCache Redis OSS specific settings
         keepAlive: true,
-        connectTimeout: 10000, // 10 second connection timeout
+        connectTimeout: 3000, // 3 second connection timeout for faster failure
         reconnectStrategy: (retries) => {
           if (retries >= 3) {
             console.error('Redis OSS connection failed after 3 retries');
@@ -51,7 +51,7 @@ function createRedisClient() {
       ...(config.REDIS_PASSWORD && { password: config.REDIS_PASSWORD }),
       
       // Redis OSS specific optimizations
-      commandTimeout: 5000,
+      commandTimeout: 2000, // 2 second command timeout for faster retrieval
       lazyConnect: true,
       database: 0, // ElastiCache Redis OSS uses database 0 (standard Redis behavior)
       

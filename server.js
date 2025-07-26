@@ -7,6 +7,7 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 require('dotenv').config();
+// app.use(express.json());
 
 const { initializeConfig, getConfig } = require('./config/secrets');
 const { connectDB } = require('./config/database');
