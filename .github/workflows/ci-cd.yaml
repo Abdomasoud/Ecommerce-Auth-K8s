@@ -27,21 +27,15 @@ jobs:
         cache: 'npm'
 
     - name: Install dependencies
-      run: |
-        cd application
-        npm ci
+      run: npm ci
 
     - name: Run tests
-      run: |
-        cd application
-        npm test
+      run: npm test
       env:
         NODE_ENV: test
 
     - name: Run linting
-      run: |
-        cd application
-        npm run lint
+      run: npm run lint
       continue-on-error: true
 
   security-scan:
