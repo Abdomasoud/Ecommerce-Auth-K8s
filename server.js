@@ -7,15 +7,18 @@ const morgan = require('morgan');
 const rateLimit = require('express-rate-limit');
 const path = require('path');
 require('dotenv').config();
-// app.use(express.json());
 
 const { initializeConfig, getConfig } = require('./config/secrets');
-const { connectDB } = require('./config/database');
+const { connectDB, closePool } = require('./config/database');
 const authRoutes = require('./routes/auth');
 const userRoutes = require('./routes/user');
 const productRoutes = require('./routes/products');
 
 const app = express();
+
+// Global variables to track connections
+let redisClient = null;
+let server = null;
 
 // Initialize configuration and start server
 async function startServer() {
@@ -29,7 +32,8 @@ async function startServer() {
     
     // Now that config is initialized, we can import Redis client
     console.log('Step 2: Importing Redis client...');
-    const { redisClient } = require('./config/redis');
+    const { redisClient: redis } = require('./config/redis');
+    redisClient = redis; // Store globally for shutdown
     
     console.log('Configuration loaded successfully:', {
       NODE_ENV: config.NODE_ENV,
@@ -62,6 +66,7 @@ async function startServer() {
         },
       },
     }));
+    
     app.use(cors({
       origin: config.NODE_ENV === 'production' ? ['https://yourdomain.com'] : ['http://localhost:3000'],
       credentials: true
@@ -87,26 +92,45 @@ async function startServer() {
     app.use(express.static(path.join(__dirname, 'public')));
 
     // Step 3: Initialize database connection
-    console.log('Step 3: Connecting to AWS RDS PostgreSQL...');
+    console.log('Step 3: Connecting to PostgreSQL...');
     await connectDB();
     
     // Step 4: Initialize Redis connection
-    console.log('Step 4: Connecting to AWS ElastiCache Redis...');
-    await redisClient.connect();
-    console.log('Database and Redis connected successfully');
+    console.log('Step 4: Connecting to Redis...');
+    try {
+      await redisClient.connect();
+      console.log('✅ Redis connected successfully');
+    } catch (error) {
+      console.warn('⚠️  Redis connection failed, continuing without Redis:', error.message);
+      redisClient = null; // Set to null if connection fails
+    }
 
-    // Session configuration
-    app.use(session({
-      store: new RedisStore({ client: redisClient }),
-      secret: config.SESSION_SECRET || 'fallback-session-secret',
-      resave: false,
-      saveUninitialized: false,
-      cookie: {
-        secure: config.NODE_ENV === 'production',
-        httpOnly: true,
-        maxAge: parseInt(config.SESSION_MAX_AGE) || 24 * 60 * 60 * 1000 // 24 hours
-      }
-    }));
+    // Session configuration - only if Redis is available
+    if (redisClient) {
+      app.use(session({
+        store: new RedisStore({ client: redisClient }),
+        secret: config.SESSION_SECRET || 'fallback-session-secret',
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+          secure: config.NODE_ENV === 'production',
+          httpOnly: true,
+          maxAge: parseInt(config.SESSION_MAX_AGE) || 24 * 60 * 60 * 1000 // 24 hours
+        }
+      }));
+    } else {
+      // Fallback to memory store if Redis is not available
+      app.use(session({
+        secret: config.SESSION_SECRET || 'fallback-session-secret',
+        resave: false,
+        saveUninitialized: false,
+        cookie: {
+          secure: config.NODE_ENV === 'production',
+          httpOnly: true,
+          maxAge: parseInt(config.SESSION_MAX_AGE) || 24 * 60 * 60 * 1000 // 24 hours
+        }
+      }));
+    }
 
     // Routes
     app.use('/api/auth', authRoutes);
@@ -137,15 +161,23 @@ async function startServer() {
         const { query } = require('./config/database');
         await query('SELECT 1');
         
-        // Check Redis connection
-        await redisClient.ping();
+        // Check Redis connection if available
+        let redisStatus = 'not connected';
+        if (redisClient) {
+          try {
+            await redisClient.ping();
+            redisStatus = 'connected';
+          } catch (error) {
+            redisStatus = 'error';
+          }
+        }
         
         res.json({
           status: 'healthy',
           timestamp: new Date().toISOString(),
           services: {
             database: 'connected',
-            redis: 'connected'
+            redis: redisStatus
           }
         });
       } catch (error) {
@@ -174,14 +206,24 @@ async function startServer() {
       });
     });
     
-    app.listen(PORT, () => {
+    // START THE SERVER - This was missing proper error handling
+    console.log('Step 5: Starting HTTP server...');
+    server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`✅ Server running on port ${PORT}`);
       console.log(`🌍 Environment: ${config.NODE_ENV}`);
       console.log(`🔐 Using Secrets Manager: ${process.env.USE_SECRETS_MANAGER === 'true' || config.NODE_ENV === 'production'}`);
       console.log(`🗄️  Database: ${config.DB_HOST}:${config.DB_PORT}/${config.DB_NAME}`);
-      console.log(`🔴 Redis: ${config.REDIS_HOST}:${config.REDIS_PORT}`);
+      console.log(`🔴 Redis: ${config.REDIS_HOST}:${config.REDIS_PORT} (${redisClient ? 'connected' : 'not connected'})`);
       console.log(`🚀 Server initialization completed successfully!`);
+      console.log(`🌐 Server listening on http://0.0.0.0:${PORT}`);
     });
+
+    // Handle server startup errors
+    server.on('error', (error) => {
+      console.error('❌ Server startup error:', error);
+      process.exit(1);
+    });
+
   } catch (error) {
     console.error('❌ Failed to start server:', error);
     console.error('Error stack:', error.stack);
@@ -189,27 +231,44 @@ async function startServer() {
   }
 }
 
+// Graceful shutdown function
+async function gracefulShutdown(signal) {
+  console.log(`${signal} received, shutting down gracefully`);
+  
+  try {
+    // Close HTTP server
+    if (server) {
+      console.log('Closing HTTP server...');
+      server.close(() => {
+        console.log('HTTP server closed');
+      });
+    }
+
+    // Close Redis connection
+    if (redisClient) {
+      console.log('Closing Redis connection...');
+      await redisClient.quit();
+      console.log('Redis connection closed');
+    }
+
+    // Close database pool
+    console.log('Closing database pool...');
+    await closePool();
+    console.log('Database pool closed');
+
+    console.log('Graceful shutdown completed');
+    process.exit(0);
+  } catch (error) {
+    console.error('Error during graceful shutdown:', error);
+    process.exit(1);
+  }
+}
+
+// Start the server
 startServer();
 
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  try {
-    await redisClient.quit();
-  } catch (error) {
-    console.error('Error closing Redis connection:', error);
-  }
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully');
-  try {
-    await redisClient.quit();
-  } catch (error) {
-    console.error('Error closing Redis connection:', error);
-  }
-  process.exit(0);
-});
+// Graceful shutdown handlers
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
 module.exports = app;
