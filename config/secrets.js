@@ -1,6 +1,4 @@
 const AWS = require('aws-sdk');
-const fs = require('fs').promises;
-const path = require('path');
 
 // Cache for secrets to avoid repeated API calls
 const secretsCache = new Map();
@@ -30,126 +28,81 @@ function configureAWS() {
   return new AWS.SecretsManager();
 }
 
-// Add the missing getSecret function
 async function getSecret(secretName) {
-  const cacheKey = secretName;
-  const cached = secretsCache.get(cacheKey);
-  
-  if (cached && (Date.now() - cached.timestamp) < CACHE_TTL) {
-    console.log(`Using cached secret: ${secretName}`);
-    return cached.data;
-  }
-
   try {
-    const secretsManager = configureAWS();
-    const result = await secretsManager.getSecretValue({ SecretId: secretName }).promise();
+    // Check cache first
+    const cached = secretsCache.get(secretName);
+    if (cached && Date.now() - cached.timestamp < CACHE_TTL) {
+      console.log(`Using cached secret: ${secretName}`);
+      return cached.value;
+    }
+
+    console.log(`Fetching secret from AWS Secrets Manager: ${secretName}`);
     
-    let secretData;
+    // Configure AWS SDK when needed
+    const secretsManager = configureAWS();
+    
+    // For production, we prefer IAM roles, but check if credentials are configured
+    if (process.env.NODE_ENV !== 'production' && (!process.env.AWS_ACCESS_KEY_ID || !process.env.AWS_SECRET_ACCESS_KEY)) {
+      console.warn('Warning: AWS credentials not configured. Make sure IAM role is properly configured or set AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY');
+    }
+
+    const result = await secretsManager.getSecretValue({
+      SecretId: secretName
+    }).promise();
+
+    let secretValue;
     if (result.SecretString) {
-      secretData = JSON.parse(result.SecretString);
+      secretValue = JSON.parse(result.SecretString);
     } else {
-      throw new Error('Secret value is not a string');
+      // Handle binary secrets if needed
+      secretValue = Buffer.from(result.SecretBinary, 'base64').toString('ascii');
     }
 
     // Cache the secret
-    secretsCache.set(cacheKey, {
-      data: secretData,
+    secretsCache.set(secretName, {
+      value: secretValue,
       timestamp: Date.now()
     });
 
     console.log(`Successfully fetched secret: ${secretName}`);
-    return secretData;
+    return secretValue;
   } catch (error) {
-    console.error(`Failed to fetch secret ${secretName}:`, error.message);
-    throw error;
+    console.error(`Error fetching secret ${secretName}:`, error.message);
+    
+    // Better error messages for common issues
+    if (error.code === 'ResourceNotFoundException') {
+      throw new Error(`Secret ${secretName} not found in AWS Secrets Manager. Please verify the secret name exists in region ${process.env.AWS_REGION || 'us-east-1'}`);
+    } else if (error.code === 'UnauthorizedOperation' || error.code === 'AccessDenied') {
+      throw new Error(`Access denied to secret ${secretName}. Check IAM permissions for SecretsManager:GetSecretValue`);
+    } else if (error.code === 'InvalidSignatureException') {
+      throw new Error('Invalid AWS credentials. Please check your AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY or IAM role permissions.');
+    } else if (error.code === 'TokenRefreshRequired') {
+      throw new Error('AWS token refresh required. This usually happens with temporary credentials.');
+    } else if (error.code === 'NetworkingError') {
+      throw new Error(`Network error accessing AWS Secrets Manager: ${error.message}`);
+    } else {
+      throw new Error(`Failed to fetch secret ${secretName}: ${error.message}`);
+    }
   }
 }
 
-// New function to read secrets from CSI mounted files
-async function loadFromCSIMountedFiles() {
-  console.log('Loading configuration from CSI mounted secret files...');
-  
+async function getSecretValue(secretName, key) {
   try {
-    const secretsPath = '/tmp';
-    
-    // Read all secret files
-    const [dbHost, dbUser, dbPassword, dbName, dbPort, redisHost, redisPort, redisPassword, jwtSecret, sessionSecret] = await Promise.all([
-      fs.readFile(path.join(secretsPath, 'DB_HOST'), 'utf8').catch(() => 'localhost'),
-      fs.readFile(path.join(secretsPath, 'DB_USER'), 'utf8').catch(() => 'ecommerce_user'),
-      fs.readFile(path.join(secretsPath, 'DB_PASSWORD'), 'utf8').catch(() => ''),
-      fs.readFile(path.join(secretsPath, 'DB_NAME'), 'utf8').catch(() => 'ecommerce_db'),
-      fs.readFile(path.join(secretsPath, 'DB_PORT'), 'utf8').catch(() => '5432'),
-      fs.readFile(path.join(secretsPath, 'REDIS_HOST'), 'utf8').catch(() => 'localhost'),
-      fs.readFile(path.join(secretsPath, 'REDIS_PORT'), 'utf8').catch(() => '6379'),
-      fs.readFile(path.join(secretsPath, 'REDIS_PASSWORD'), 'utf8').catch(() => ''),
-      fs.readFile(path.join(secretsPath, 'JWT_SECRET'), 'utf8').catch(() => 'your-jwt-secret-key'),
-      fs.readFile(path.join(secretsPath, 'SESSION_SECRET'), 'utf8').catch(() => 'your-session-secret')
-    ]);
-
-    const config = {
-      // Database configuration from mounted files
-      DB_HOST: dbHost.trim(),
-      DB_USER: dbUser.trim(),
-      DB_PASSWORD: dbPassword.trim(),
-      DB_NAME: dbName.trim(),
-      DB_PORT: parseInt(dbPort.trim()) || 5432,
-
-      // Redis configuration from mounted files
-      REDIS_HOST: redisHost.trim(),
-      REDIS_PORT: parseInt(redisPort.trim()) || 6379,
-      REDIS_PASSWORD: redisPassword.trim(),
-      REDIS_TLS: 'false',
-
-      // Application secrets from mounted files
-      JWT_SECRET: jwtSecret.trim(),
-      JWT_EXPIRES_IN: '7d',
-      SESSION_SECRET: sessionSecret.trim(),
-      SESSION_MAX_AGE: 86400000,
-
-      // Other configuration
-      NODE_ENV: process.env.NODE_ENV || 'production',
-      PORT: process.env.PORT || 3000,
-      AWS_REGION: process.env.AWS_REGION || 'us-east-1'
-    };
-
-    console.log('Database config:', {
-      host: config.DB_HOST,
-      port: config.DB_PORT,
-      database: config.DB_NAME,
-      user: config.DB_USER,
-      hasPassword: !!config.DB_PASSWORD
-    });
-    
-    console.log('Redis config:', {
-      host: config.REDIS_HOST,
-      port: config.REDIS_PORT,
-      hasPassword: !!config.REDIS_PASSWORD
-    });
-
-    console.log('Configuration loaded from CSI mounted files successfully');
-    return config;
+    const secret = await getSecret(secretName);
+    return secret[key];
   } catch (error) {
-    console.error('Failed to load from CSI mounted files:', error.message);
+    console.error(`Error getting secret value for ${secretName}:${key}:`, error);
     throw error;
   }
 }
 
 // Main configuration loader
 async function loadConfig() {
-  const useSecretsManager = process.env.USE_SECRETS_MANAGER === 'true';
-  const useCSIDriver = process.env.USE_CSI_DRIVER === 'true';
+  const isProduction = process.env.NODE_ENV === 'productionz';
+  const useSecretsManager = process.env.USE_SECRETS_MANAGER === 'true' || isProduction;
   
-  console.log(`Loading configuration... Secrets Manager: ${useSecretsManager}, CSI Driver: ${useCSIDriver}`);
-
-  // Priority: CSI Driver > Secrets Manager > Environment Variables
-  if (useCSIDriver) {
-    try {
-      return await loadFromCSIMountedFiles();
-    } catch (error) {
-      console.error('Failed to load from CSI driver:', error.message);
-      console.log('Falling back to other methods...');
-    }
-  }
+  console.log(`Loading configuration... Production: ${isProduction}, Secrets Manager: ${useSecretsManager}`);
 
   if (useSecretsManager) {
     try {
@@ -163,6 +116,9 @@ async function loadConfig() {
       const APP_SECRET_NAME = process.env.APP_SECRET_NAME || 'ecommerce/prod/app-config';
 
       console.log('Fetching secrets from AWS Secrets Manager...');
+      console.log(`Database Secret: ${DB_SECRET_NAME}`);
+      console.log(`Redis Secret: ${REDIS_SECRET_NAME}`);
+      console.log(`App Secret: ${APP_SECRET_NAME}`);
       
       // Fetch secrets from AWS Secrets Manager
       const [dbSecrets, redisSecrets, appSecrets] = await Promise.all([
@@ -172,32 +128,50 @@ async function loadConfig() {
       ]);
 
       console.log('Successfully fetched all secrets from AWS Secrets Manager');
+      console.log('Database config:', {
+        host: (dbSecrets.host || dbSecrets.hostname).split(':')[0], // Show cleaned host
+        port: dbSecrets.port,
+        database: dbSecrets.database || dbSecrets.dbname
+      });
+      console.log('Redis config:', {
+        host: (redisSecrets.host || redisSecrets.hostname).includes(':') 
+          ? (redisSecrets.host || redisSecrets.hostname).split(':')[0] 
+          : (redisSecrets.host || redisSecrets.hostname), // Only split if port is included
+        port: redisSecrets.port,
+        tls: redisSecrets.tls || redisSecrets.ssl_enabled || 'false',
+        hasPassword: !!redisSecrets.password
+      });
 
       return {
-        // Database configuration from Secrets Manager
-        DB_HOST: (dbSecrets.host || dbSecrets.hostname).split(':')[0],
+        // Database configuration - handle different possible field names and clean host
+        DB_HOST: (dbSecrets.host || dbSecrets.hostname).split(':')[0], // Remove port from hostname
         DB_USER: dbSecrets.username || dbSecrets.user,
         DB_PASSWORD: dbSecrets.password,
         DB_NAME: dbSecrets.dbname || dbSecrets.database || 'ecommerce_db',
         DB_PORT: dbSecrets.port || 5432,
 
-        // Redis configuration from Secrets Manager
+        // Redis configuration - handle different possible field names and clean host
         REDIS_HOST: (redisSecrets.host || redisSecrets.hostname).includes(':') 
           ? (redisSecrets.host || redisSecrets.hostname).split(':')[0] 
-          : (redisSecrets.host || redisSecrets.hostname),
+          : (redisSecrets.host || redisSecrets.hostname), // Only split if port is included
         REDIS_PORT: redisSecrets.port || 6379,
         REDIS_PASSWORD: redisSecrets.password || redisSecrets.auth_token,
-        REDIS_TLS: redisSecrets.tls || redisSecrets.ssl_enabled || 'true',
+        REDIS_TLS: redisSecrets.tls || redisSecrets.ssl_enabled || 'true', // Default to true since ElastiCache has TLS enabled
+        REDIS_CLUSTER_MODE: redisSecrets.cluster_mode || 'false',
 
-        // Application secrets
+        // Application secrets - matching your AWS Secrets Manager structure
         JWT_SECRET: appSecrets.jwt_secret,
         JWT_EXPIRES_IN: appSecrets.jwt_expires_in || '7d',
         SESSION_SECRET: appSecrets.session_secret,
         SESSION_MAX_AGE: appSecrets.session_max_age || 86400000,
+        API_KEY: appSecrets.api_key,
+        ENCRYPTION_KEY: appSecrets.encryption_key,
 
         // Other configuration
         NODE_ENV: process.env.NODE_ENV || 'production',
         PORT: process.env.PORT || 3000,
+        RATE_LIMIT_WINDOW_MS: process.env.RATE_LIMIT_WINDOW_MS || 900000,
+        RATE_LIMIT_MAX_REQUESTS: process.env.RATE_LIMIT_MAX_REQUESTS || 100,
         AWS_REGION: process.env.AWS_REGION || 'us-east-1'
       };
     } catch (error) {
@@ -206,7 +180,7 @@ async function loadConfig() {
       return loadFromEnvironment();
     }
   } else {
-    console.log('Using environment variables for configuration (Kubernetes deployment mode)');
+    console.log('Using environment variables for configuration');
     return loadFromEnvironment();
   }
 }
@@ -215,52 +189,42 @@ function loadFromEnvironment() {
   console.log('Loading configuration from environment variables...');
   
   const config = {
-    // Database configuration - direct from environment
-    DB_HOST: process.env.DB_HOST || 'postgres-service',
-    DB_USER: process.env.DB_USER || 'ecommerce_user',
+    // Database configuration
+    DB_HOST: process.env.DB_HOST,
+    DB_USER: process.env.DB_USER,
     DB_PASSWORD: process.env.DB_PASSWORD,
-    DB_NAME: process.env.DB_NAME || 'ecommerce_db',
-    DB_PORT: process.env.DB_PORT || 5432,
+    DB_NAME: process.env.DB_NAME || 'ecommerce_db', // FIXED: Changed from user_auth_db
+    DB_PORT: process.env.DB_PORT || 5432, // FIXED: Changed from 3306 to 5432 (PostgreSQL)
 
-    // Redis configuration - direct from environment
-    REDIS_HOST: process.env.REDIS_HOST || 'redis-service',
+    // Redis configuration
+    REDIS_HOST: process.env.REDIS_HOST,
     REDIS_PORT: process.env.REDIS_PORT || 6379,
-    REDIS_PASSWORD: process.env.REDIS_PASSWORD || '',
+    REDIS_PASSWORD: process.env.REDIS_PASSWORD,
     REDIS_TLS: process.env.REDIS_TLS || 'false',
 
-    // Application secrets - direct from environment
-    JWT_SECRET: process.env.JWT_SECRET || 'your-jwt-secret-key',
+    // Application secrets
+    JWT_SECRET: process.env.JWT_SECRET,
     JWT_EXPIRES_IN: process.env.JWT_EXPIRES_IN || '7d',
-    SESSION_SECRET: process.env.SESSION_SECRET || 'your-session-secret',
+    SESSION_SECRET: process.env.SESSION_SECRET,
     SESSION_MAX_AGE: process.env.SESSION_MAX_AGE || 86400000,
+    API_KEY: process.env.API_KEY,
+    ENCRYPTION_KEY: process.env.ENCRYPTION_KEY,
 
     // Other configuration
     NODE_ENV: process.env.NODE_ENV || 'development',
     PORT: process.env.PORT || 3000,
+    RATE_LIMIT_WINDOW_MS: process.env.RATE_LIMIT_WINDOW_MS || 900000,
+    RATE_LIMIT_MAX_REQUESTS: process.env.RATE_LIMIT_MAX_REQUESTS || 100,
     AWS_REGION: process.env.AWS_REGION || 'us-east-1'
   };
 
-  // Validate required fields for Kubernetes deployment
-  const requiredFields = ['DB_PASSWORD'];
+  // Validate required fields
+  const requiredFields = ['DB_HOST', 'DB_USER', 'DB_PASSWORD', 'REDIS_HOST'];
   const missingFields = requiredFields.filter(field => !config[field]);
   
   if (missingFields.length > 0) {
     console.warn(`Warning: Missing required environment variables: ${missingFields.join(', ')}`);
   }
-
-  console.log('Database config:', {
-    host: config.DB_HOST,
-    port: config.DB_PORT,
-    database: config.DB_NAME,
-    user: config.DB_USER
-  });
-  
-  console.log('Redis config:', {
-    host: config.REDIS_HOST,
-    port: config.REDIS_PORT,
-    tls: config.REDIS_TLS,
-    hasPassword: !!config.REDIS_PASSWORD
-  });
 
   console.log('Configuration loaded from environment variables successfully');
   return config;
@@ -290,8 +254,19 @@ function getConfig() {
   return config;
 }
 
+// Clear cache periodically
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, value] of secretsCache.entries()) {
+    if (now - value.timestamp > CACHE_TTL) {
+      secretsCache.delete(key);
+    }
+  }
+}, CACHE_TTL);
+
 module.exports = {
   initializeConfig,
   getConfig,
-  getSecret
+  getSecret,
+  getSecretValue
 };
