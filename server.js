@@ -189,6 +189,13 @@ async function startServer() {
       }
     });
 
+    // Simple deployment test endpoint
+    app.get('/deploymenttest', (req, res) => {
+      res.json({
+        message: 'deployment success'
+      });
+    });
+
     // Error handling middleware
     app.use((err, req, res, next) => {
       console.error('Application error:', err.stack);
