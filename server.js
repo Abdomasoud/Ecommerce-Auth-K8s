@@ -190,7 +190,7 @@ async function startServer() {
     });
 
     // Simple deployment test endpoint
-    app.get('/deploymenttest', (req, res) => {
+    app.get('/deployment', (req, res) => {
       res.json({
         message: 'deployment success'
       });
